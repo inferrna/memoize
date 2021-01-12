@@ -1,7 +1,7 @@
 #![crate_type = "proc-macro"]
 #![allow(unused_imports)] // Spurious complaints about a required trait import.
 
-use syn::{self, export::ToTokens, parse_macro_input, spanned::Spanned, ItemFn};
+use syn::{self, export::ToTokens, Type::Reference, parse_macro_input, spanned::Spanned, ItemFn, TypeReference};
 
 use proc_macro::TokenStream;
 use quote::{self};
@@ -219,6 +219,18 @@ pub fn memoize(attr: TokenStream, item: TokenStream) -> TokenStream {
         syn::ReturnType::Type(_, ty) => return_type = ty.to_token_stream(),
     }
 
+    //Clone value, but keep reference as is
+    let get_val_fn: proc_macro2::TokenStream = match &sig.output {
+        syn::ReturnType::Default => quote::quote! { .clone() },
+        syn::ReturnType::Type(_, bty) => {
+            match bty.as_ref() {
+                Reference(TypeReference{ and_token, lifetime, mutability, elem }) => quote::quote! { },
+                _ => quote::quote! { .clone() },
+            }
+
+        }
+    };
+
     // Construct storage for the memoized keys and return values.
     let store_ident = syn::Ident::new(&map_name.to_uppercase(), sig.span());
     let (cache_type, cache_init) = store::construct_cache(&attr, input_tuple_type, return_type);
@@ -246,30 +258,30 @@ pub fn memoize(attr: TokenStream, item: TokenStream) -> TokenStream {
                 #sig {
                     {
                         let mut hm = &mut #store_ident.lock().unwrap();
-                        if let Some(r) = hm.#get_fn(&#syntax_names_tuple_cloned) {
-                            return r.clone();
+                        if let Some(x) = hm.#get_fn(&#syntax_names_tuple_cloned) {
+                            return x#get_val_fn;
                         }
                     }
-                    let r = #memoized_id(#(#input_names.clone()),*);
+                    let x = #memoized_id(#(#input_names.clone()),*);
                     let mut hm = &mut #store_ident.lock().unwrap();
-                    hm.#insert_fn(#syntax_names_tuple, r.clone());
-                    r
+                    hm.#insert_fn(#syntax_names_tuple, x#get_val_fn);
+                    x
                 }
             },
             Some(ttl) => quote::quote! {
                 #sig {
                     {
                         let mut hm = &mut #store_ident.lock().unwrap();
-                        if let Some((last_updated, r)) = hm.#get_fn(&#syntax_names_tuple_cloned) {
+                        if let Some((last_updated, x)) = hm.#get_fn(&#syntax_names_tuple_cloned) {
                             if last_updated.elapsed() < #ttl {
-                                return r.clone();
+                                return x#get_val_fn;
                             }
                         }
                     }
-                    let r = #memoized_id(#(#input_names.clone()),*);
+                    let x = #memoized_id(#(#input_names.clone()),*);
                     let mut hm = &mut #store_ident.lock().unwrap();
-                    hm.#insert_fn(#syntax_names_tuple, (std::time::Instant::now(), r.clone()));
-                    r
+                    hm.#insert_fn(#syntax_names_tuple, (std::time::Instant::now(), x#get_val_fn));
+                    x
                 }
             },
         }
